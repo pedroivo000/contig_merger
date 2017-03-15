@@ -9,7 +9,7 @@
 use warnings;
 use strict;
 use FastaTools;
-use List::Util;
+use List::Util qw(min max sum);
 use List::MoreUtils qw(first_index);
 use Array::Utils qw(array_minus);
 use File::Basename;
@@ -33,28 +33,35 @@ my $output_file = $opt_o || "merged_contigs.fasta";
 #################################
 #### Importing cluster files ####
 #################################
-print "Importing cluster files...";
+print "Importing cluster files:\n";
 my ($filename_pattern, $path) = fileparse($cluster_files);
 $cluster_files =~ tr/%/\*/; #changing the % character for the *, allowing pattern search
 
+my $number_of_cluster_files = `ls $cluster_files | wc -l`;
+print "Number of cluster files = $number_of_cluster_files\n"; 
+
 #Creating file with all the clusters' contig sequences:
 my $allcontigs_file = $path."allcontigs.fastq";
-system("cat $cluster_files > $allcontigs_file");
+system("cat $cluster_files > $allcontigs_file") unless -e $allcontigs_file;
 
 #Opening file with all contigs:
 my %records = FastaTools::loadfastq($allcontigs_file);
-print "Done!\n";
+my $total_number_of_contigs = keys %records;
+my $total_length = sum(map {length($records{$_}{'seq'})} keys %records);
+print "Total number of contigs in clusters = $total_number_of_contigs\n";
+print "Total length of contigs in clusters = $total_length\n";  
+print "Done!\n\n";
 
 #####################################################
 #### Importing and modifying the .dot graph file ####
 #####################################################
 
 # We will use the CPAN Graph::Reader module to manipulate the .dot file:
-print "Opening graph file: $graph_dot_file...";
+print "Opening graph file: $graph_dot_file\n";
 my $dot_reader = Graph::Reader::Dot->new();
 my $dot_graph = $dot_reader->read_graph($graph_dot_file);
 
-print "Done!\n";
+print "Done!\n\n";
 #The first thing we have to do is to reorient the edges in the graph in order to
 #make all edges correspond to a contig w/ overlap in the END -> contig w/ overlap in
 #the BEGNNING> If we reorient the edges like this, we can use the directional graph
@@ -63,9 +70,10 @@ print "Done!\n";
 
 #We need all the edges in the graph:
 
-print "Flipping the edges in the graph\n";
+print "Flipping the edges in the graph:\n";
 my @edges = $dot_graph->edges;
 
+my $edge_flip_counter;
 #Iterating through each edge:
 foreach my $edge (@edges) {
 	#In order to check if the edges are in the right orientation, we need to get the
@@ -93,6 +101,7 @@ foreach my $edge (@edges) {
 	#We can use the overlap beggining and ending coordinates to check if edge is in the
 	#correct orientation (END -> BEG):
 	if ($overlap_info->{'ov_startcoord_from'} == 0) {
+		$edge_flip_counter++;
 		#Deleting the wrong direction edge:
 		$dot_graph->delete_edge($from_node, $to_node);
 
@@ -114,7 +123,9 @@ foreach my $edge (@edges) {
 		$dot_graph->set_edge_attribute($from_node, $to_node, 'label', $overlap_info);
 	}
 }
-print "Done\n";
+
+print "Number of edges flipped = $edge_flip_counter\n"; 
+print "Done!\n\n";
 
 ######################################################
 #### Identifying the overlapping contigs in graph ####
@@ -125,33 +136,11 @@ print "Done\n";
 #to the longest overlap between the contigs in a cluster. In order to do this, we need to
 #compute the graph traversal.
 
+print "Finding all overlap paths in graph:\n";
 die "Graph contains cycle!" if $dot_graph->has_a_cycle; #otherwise program will be stuck
 my $paths = build_paths($dot_graph);
-
-#Some of the paths have branches, and that causes sequence duplication during
-#contig extension. We need to check which one of the paths have branches:
-my %path_branches;
-foreach my $path (@$paths) {
-    my @branches;
-    # my $number_of_ctgs_in_path = @$path;
-    foreach my $other_path (@$paths) {
-      # my $number_of_ctgs_in_other_path = @$other_path;
-      # next if ($other_path == $path);
-
-      my @diff = array_minus(@$other_path, @$path);
-      if (@diff==0){
-          push(@branches, $other_path);
-      }
-    }
-    $path_branches{$path} = \@branches;
-}
-
-print Dumper(\%path_branches);
-
-#Now that we have the paths, we can use the overlap information to extend the contigs in
-#a path/cluster:
-my %extended_contigs; #will hold the extend contig sequence and information
-my $count = 0;
+my $number_of_paths = @$paths;
+print "Found $number_of_paths paths in graph\nDone!\n\n"; 
 
 #Creating merging statistics output file:
 my $merging_stats_file = "merged_contigs.info";
@@ -163,19 +152,30 @@ my $last_modify_time = scalar localtime $file_stats[9];
 my $header =
 "Merged contigs information file
 File: $merging_stats_file;
-Creating time: $last_modify_time;
+Last modification time: $last_modify_time;
 Input files:
  - All contigs FASTq file: $allcontigs_file;
- - Graph file: $graph_dot_file\n";
+ - Graph file: $graph_dot_file;
+ - Cluster files: $cluster_files ($number_of_cluster_files);\n";
 
 print $info_out "$header";
 
-my %duplication_counter;
+#Now that we have the paths, we can use the overlap information to extend the contigs in
+#a path/cluster:
+my %extended_contigs; #will hold the extended contig sequence and information
+my $count = 0;
+my %path_branches;
+
+#Loop to extend the contigs:
 foreach my $overlap_path (@$paths) {
 	$count++;
 	my $name = "merged_contig_$count";
 	my $extended_contig_seq = ''; #will hold the merged contig sequence
+	my $total_error; #total number of "errors" in overlap (mismatches + edits)
+	my $path_score; #total number of errors/total length of overlap path
 	my @contig_names = @$overlap_path;	#list of contigs present in current path
+	my $number_of_contigs = @contig_names; #number of contigs in path
+	my $root_contig = $contig_names[0]; #first contig in the path
 	my @sequences; #will hold all the sequences from the contigs with the
 				   #overlapping regions deleted from the 'to' contig
 
@@ -184,11 +184,10 @@ foreach my $overlap_path (@$paths) {
 
 	#Loop through each contig in each path:
 	foreach my $i (0..$#contig_names) {
-		$duplication_counter{$contig_names[$i]}++;
 		my $seq = $records{$contig_names[$i]}{'seq'};
 		my $seq_length = length($seq);
-
 		print $info_out "$contig_names[$i]\t$seq_length\t";
+		
 		#Removing the overlap region from all 'to' contigs:
 		if ($dot_graph->has_edge($contig_names[$i-1], $contig_names[$i])) {
 			my $overlap_info = $dot_graph->get_edge_attribute($contig_names[$i-1], $contig_names[$i], 'label');
@@ -198,6 +197,10 @@ foreach my $overlap_path (@$paths) {
 
 			my $no_overlap_length = length($seq);
 			print $info_out "$no_overlap_length\n";
+			
+			my $overlap_mismatches = $overlap_info->{'mismatches'};
+			my $overlap_edits = $overlap_info->{'edits'};
+			$total_error = $overlap_mismatches + $overlap_edits;
 		} else {
 			#Getting the contig sequence from %records:
 			push(@sequences, $seq);
@@ -207,26 +210,77 @@ foreach my $overlap_path (@$paths) {
 	#Now we can concatenate each sequence string
 	$extended_contig_seq = join('', @sequences);
 	my $merged_contig_length = length($extended_contig_seq);
-
+	
+	#And calculate the super contig merging score:
+	$path_score = $total_error/$merged_contig_length;
+	
+	#Populating the %path_branches hash:
+	push(@{$path_branches{$root_contig}->{'superctgs'}}, $name);
+	push(@{$path_branches{$root_contig}->{'total_error'}}, $total_error);
+	push(@{$path_branches{$root_contig}->{'total_length'}}, $merged_contig_length);
+	push(@{$path_branches{$root_contig}->{'score'}}, $path_score);
+	
+	#Printing more stuff to the information file:
 	$extended_contigs{$name}{merged_contigs} = \@contig_names;
 	$extended_contigs{$name}{seq} 			 =  $extended_contig_seq;
-	print $info_out "merged_contig_length: $merged_contig_length\n";
+	print $info_out "merged_contig_length: $merged_contig_length\ntotal_error: $total_error\n";
 }
 
-<<<<<<< HEAD
-$contig_duplitcation_counter = sort {$contig_duplication_counter{$b} <=> $contig_duplication_counter{$a}} %contig_duplication_counter
-print "Parent contigs count:\n"; 
-print Dumper \%contig_duplication_counter;
-=======
-# print "Parent contigs count:\n";
-# foreach my $dup_ctg (sort {$duplication_counter{$b} <=> $duplication_counter{$a}} keys %duplication_counter) {
-#   my $ctg_length = length($records{$dup_ctg}{'seq'});
-#   my $dup_length = $ctg_length*$duplication_counter{$dup_ctg};
-#
-#   print "$dup_ctg\t$duplication_counter{$dup_ctg}\t$ctg_length\t$dup_length\n";
-# }
->>>>>>> 8c91a61b0a271b46ce52d1881545b7a86f7ea1e7
 
+#Now that we have a hash grouping the merged contigs by their root contig, we can select
+#the paths that have the smallest score value. This way, we can reduce the number of 
+#duplicated contigs that are increasing the overall size of our assembly:
+my @selected_supercontigs;
+foreach my $root (keys %path_branches) {
+	my @scores = @{$path_branches{$root}->{'score'}};
+	#The "best" path is the one that has the smallest score:
+	my $min_score = min(@scores);
+	
+	#Tiebreakers:
+	#First, check if there is a tie:
+	my @index_of_repeated_values = grep $scores[$_] == $min_score, 0..$#scores;
+	my $winner_index; #index of winner merged contig after tiebreak
+	my $winner_contig; #winner merged contig after tiebreak
+	
+	#If there is a tie:
+	if (@index_of_repeated_values > 1) { 
+		my $num_of_ties = @index_of_repeated_values;
+		#Case 1: if score == 0, keep longest merged contig
+		if ($min_score == 0) {
+			my @merged_contigs_length = map {$path_branches{$root}->{'total_length'}->[$_]} @index_of_repeated_values;
+			my $max_length = max(@merged_contigs_length);
+			$winner_index = first_index {$_ eq $max_length} @scores; 
+			$winner_contig = $path_branches{$root}->{'superctgs'}->[$winner_index];
+
+# 			print "$root\t$min_score\tlongest contig\t$num_of_ties\t$winner_contig\n"; 
+		} else {
+			#Case 2: if two or more contigs have same score, keep the one with the lowest
+			#number of errors:		
+			my @total_errors = map{$path_branches{$root}->{'total_error'}->[$_]} @index_of_repeated_values;
+			my $min_error = min(@total_errors);
+			$winner_index = first_index {$_ eq $min_error} @scores;
+			$winner_contig = $path_branches{$root}->{'superctgs'}->[$winner_index];
+			
+# 			print "$root\t$min_score\tsmallest error\t$num_of_ties\t$winner_contig\n"; 
+		}
+	} 
+	#If there is no tie:
+	else {
+		$winner_index = $#index_of_repeated_values; #the winner index is the only index in the index array
+		$winner_contig = $path_branches{$root}->{'superctgs'}->[$winner_index];
+		
+# 		print "$root\t$min_score\tno tie\t0\t$winner_contig\n";
+	}
+	push(@selected_supercontigs, $winner_contig);
+}
+
+#Checking how many contigs were filtered
+my $total_before_selection = keys %extended_contigs;
+my $total_after_selection = @selected_supercontigs;
+my $filtered = $total_before_selection - $total_after_selection;
+
+print "Before = $total_before_selection\nAfter = $total_after_selection\nRemoved = $filtered\n"; 
+	
 #Print merged contig sequences to output file:
 open(my $contigs_out, ">$output_file") || die "Can't open $output_file $!\n";
 foreach my $contig_name (sort {substr($a, 14) <=> substr($b, 14)} keys %extended_contigs) {
@@ -261,3 +315,13 @@ sub build_paths {
 
    return \@paths;
 }
+
+sub sequence_metrics {
+	my (@contig_lengths) = @_;
+	@contig_lengths = sort {$a <=> $b} @contig_lengths;
+	
+	#Calculating metrics:
+	$total_length = sum(@contig_lengths); #total sum of contig lengths
+	
+	
+	
