@@ -29,6 +29,7 @@ getopts('i:c:hvo:');
 my $graph_dot_file = $opt_i;
 my $cluster_files = $opt_c;
 my $output_file = $opt_o || "merged_contigs.fasta";
+my $output_file2 = "selected_".$output_file;
 
 #################################
 #### Importing cluster files ####
@@ -47,29 +48,27 @@ system("cat $cluster_files > $allcontigs_file") unless -e $allcontigs_file;
 #Opening file with all contigs:
 my %records = FastaTools::loadfastq($allcontigs_file);
 my $total_number_of_contigs = keys %records;
-my $total_length = sum(map {length($records{$_}{'seq'})} keys %records);
-print "Total number of contigs in clusters = $total_number_of_contigs\n";
-print "Total length of contigs in clusters = $total_length\n";  
-print "Done!\n\n";
+my @contig_lengths = map {length($records{$_}{'seq'})} keys %records;
+my %metrics = sequence_metrics(@contig_lengths);
+
+print_metrics(%metrics);
 
 #####################################################
 #### Importing and modifying the .dot graph file ####
 #####################################################
-
 # We will use the CPAN Graph::Reader module to manipulate the .dot file:
 print "Opening graph file: $graph_dot_file\n";
 my $dot_reader = Graph::Reader::Dot->new();
 my $dot_graph = $dot_reader->read_graph($graph_dot_file);
 
 print "Done!\n\n";
+
 #The first thing we have to do is to reorient the edges in the graph in order to
 #make all edges correspond to a contig w/ overlap in the END -> contig w/ overlap in
 #the BEGNNING> If we reorient the edges like this, we can use the directional graph
 #information to construct the super-contigs in a greedy way, by merging the individual
 #contigs in a specific 'path' in the cluster from the directed graph.
-
 #We need all the edges in the graph:
-
 print "Flipping the edges in the graph:\n";
 my @edges = $dot_graph->edges;
 
@@ -123,14 +122,12 @@ foreach my $edge (@edges) {
 		$dot_graph->set_edge_attribute($from_node, $to_node, 'label', $overlap_info);
 	}
 }
-
 print "Number of edges flipped = $edge_flip_counter\n"; 
 print "Done!\n\n";
 
 ######################################################
 #### Identifying the overlapping contigs in graph ####
 ######################################################
-
 #The graph file contains the overlap map for the different contig clusters. In order to
 #merge the clusters into super-contigs, we have to extract all the paths corresponding
 #to the longest overlap between the contigs in a cluster. In order to do this, we need to
@@ -157,7 +154,6 @@ Input files:
  - All contigs FASTq file: $allcontigs_file;
  - Graph file: $graph_dot_file;
  - Cluster files: $cluster_files ($number_of_cluster_files);\n";
-
 print $info_out "$header";
 
 #Now that we have the paths, we can use the overlap information to extend the contigs in
@@ -166,6 +162,7 @@ my %extended_contigs; #will hold the extended contig sequence and information
 my $count = 0;
 my %path_branches;
 
+print "Merging contigs:\n"; 
 #Loop to extend the contigs:
 foreach my $overlap_path (@$paths) {
 	$count++;
@@ -226,10 +223,17 @@ foreach my $overlap_path (@$paths) {
 	print $info_out "merged_contig_length: $merged_contig_length\ntotal_error: $total_error\n";
 }
 
+#Computing metrics of merged contigs:
+my @merged_contigs_length = map {length($extended_contigs{$_}{seq})} keys %extended_contigs;
+%metrics = sequence_metrics(@merged_contigs_length);
+print_metrics(%metrics);
+print "Done!\n\n"; 
 
 #Now that we have a hash grouping the merged contigs by their root contig, we can select
 #the paths that have the smallest score value. This way, we can reduce the number of 
 #duplicated contigs that are increasing the overall size of our assembly:
+print "Selecting best scoring merged contigs:\n";
+
 my @selected_supercontigs;
 foreach my $root (keys %path_branches) {
 	my @scores = @{$path_branches{$root}->{'score'}};
@@ -251,8 +255,6 @@ foreach my $root (keys %path_branches) {
 			my $max_length = max(@merged_contigs_length);
 			$winner_index = first_index {$_ eq $max_length} @scores; 
 			$winner_contig = $path_branches{$root}->{'superctgs'}->[$winner_index];
-
-# 			print "$root\t$min_score\tlongest contig\t$num_of_ties\t$winner_contig\n"; 
 		} else {
 			#Case 2: if two or more contigs have same score, keep the one with the lowest
 			#number of errors:		
@@ -260,26 +262,22 @@ foreach my $root (keys %path_branches) {
 			my $min_error = min(@total_errors);
 			$winner_index = first_index {$_ eq $min_error} @scores;
 			$winner_contig = $path_branches{$root}->{'superctgs'}->[$winner_index];
-			
-# 			print "$root\t$min_score\tsmallest error\t$num_of_ties\t$winner_contig\n"; 
 		}
 	} 
 	#If there is no tie:
 	else {
 		$winner_index = $#index_of_repeated_values; #the winner index is the only index in the index array
 		$winner_contig = $path_branches{$root}->{'superctgs'}->[$winner_index];
-		
-# 		print "$root\t$min_score\tno tie\t0\t$winner_contig\n";
 	}
 	push(@selected_supercontigs, $winner_contig);
 }
 
-#Checking how many contigs were filtered
-my $total_before_selection = keys %extended_contigs;
-my $total_after_selection = @selected_supercontigs;
-my $filtered = $total_before_selection - $total_after_selection;
+#Checking metrics after selection:
+my @selected_contigs_length = map {length($extended_contigs{$_}{'seq'})} @selected_supercontigs;
+%metrics = sequence_metrics(@selected_contigs_length);
 
-print "Before = $total_before_selection\nAfter = $total_after_selection\nRemoved = $filtered\n"; 
+print "Metrics after merged contig selection:\n"; 
+print_metrics(%metrics);
 	
 #Print merged contig sequences to output file:
 open(my $contigs_out, ">$output_file") || die "Can't open $output_file $!\n";
@@ -287,6 +285,18 @@ foreach my $contig_name (sort {substr($a, 14) <=> substr($b, 14)} keys %extended
 	my $seq = $extended_contigs{$contig_name}{'seq'};
 	print $contigs_out ">$contig_name\n$seq\n";
 }
+
+#Print selected merged contig sequences to output file:
+open (my $selected_contigs_out, ">$output_file2") || die "Can't create $output_file2. $!\n";
+foreach my $selected_contig_name (sort {substr($a, 14) <=> substr($b, 14)} @selected_supercontigs) {
+	my $seq = $extended_contigs{$selected_contig_name}{'seq'};
+	print $selected_contigs_out ">$selected_contig_name\n$seq\n"; 
+}
+
+
+
+
+
 
 #####################
 #### Subroutines ####
@@ -321,7 +331,49 @@ sub sequence_metrics {
 	@contig_lengths = sort {$a <=> $b} @contig_lengths;
 	
 	#Calculating metrics:
-	$total_length = sum(@contig_lengths); #total sum of contig lengths
+	#total sum of contig lengths
+	my $total_length = sum(@contig_lengths); 
 	
+	#Median length:
+	my $median_length;
+	my $array_size = @contig_lengths;
+	if ($array_size % 2) { #array size is odd
+		$median_length = $contig_lengths[$array_size/2];
+	} else {
+		$median_length = ($contig_lengths[($array_size/2)-1] + $contig_lengths[$array_size/2])/2;
+	}
 	
+	#Average length:
+	my $average_length = $total_length/$array_size;
+	
+	#N50:
+	my $goal = $total_length/2;
+	my $current_sum = 0;
+	my $n50;
+	do {
+		$n50 = pop @contig_lengths;	
+		$current_sum += $n50;
+	} until ($current_sum >= $goal);
+	
+	#Storing the metrics in a hash:
+	my %metrics = (
+		number_of_entries 	=> $array_size,
+		total_length 		=> $total_length,
+		median_length 		=> $median_length,
+		average_length		=> $average_length,
+		N50					=> $n50
+	);
+	
+	return(%metrics);
+}
+		
+sub print_metrics {
+	my (%metrics) = @_;
+	
+	print "Total number of contigs 	 = $metrics{'number_of_entries'}\n";
+	print "Total length of contigs 	 = $metrics{'total_length'}\n";  
+	print "Median length of contigs  = $metrics{'median_length'}\n";
+	print "Average length of contigs = $metrics{'average_length'}\n";   
+	print "N50 = $metrics{'N50'}\n\n";  
+}
 	
