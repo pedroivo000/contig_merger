@@ -28,13 +28,15 @@ getopts('i:c:hvo:');
 #Declaring the options:
 my $graph_dot_file 	= $opt_i;
 my $cluster_files 	= $opt_c;
-my $output_file 	= $opt_o || "merged_contigs.fasta"; #Output file with all merged contigs
+my $output_file_prefix 	= $opt_o || "overlap_extended_contigs"; 
 
 #Declaring output files:
-my $info_file		= "info_".$output_file; #Output file with merged contig informations
-my $output_file2 	= "selected_".$output_file; #File with only the contigs with the best path scores
-my $info_file2 		= "info_".$output_file2; #Information about the selected contigs
-my $output_file3 	= "removed_".$output_file; #File with the "loser" contigs due to their path scores
+my $output_file		= $output_file_prefix.".fasta"; #Output file with all extended contigs
+my $info_file		= "info_".$output_file_prefix.".txt"; #Output file with merged contig informations
+my $output_file2 	= "selected_".$output_file_prefix.".fasta"; #File with only the contigs with the best path scores
+my $info_file2 		= "info_".$output_file2.".txt"; #Information about the selected contigs
+my $output_file3 	= "removed_".$output_file_prefix.".fasta"; #File with the "loser" contigs due to their path scores
+my $output_file4	= "all_merged_contigs.fasta"; #File with all selected and single contigs. 
 
 #################################
 #### Importing cluster files ####
@@ -144,6 +146,9 @@ my $paths = build_paths($dot_graph);
 my $number_of_paths = @$paths;
 print "Found $number_of_paths paths in graph\nDone!\n\n"; 
 
+##################################################
+#### Merging the overlapping contigs in graph ####
+##################################################
 #Creating merging statistics output file:
 open (my $info_out, ">$info_file") || die "Can't open $info_file. $!\n";
 
@@ -228,6 +233,8 @@ foreach my $overlap_path (@$paths) {
 	print $info_out "merged_contig_length: $merged_contig_length\ntotal_error: $total_error\n";
 }
 
+close($info_out);
+
 #Computing metrics of merged contigs:
 my @merged_contigs_length = map {length($extended_contigs{$_}{seq})} keys %extended_contigs;
 %metrics = sequence_metrics(@merged_contigs_length);
@@ -240,7 +247,7 @@ foreach my $contig_name (sort {substr($a, 14) <=> substr($b, 14)} keys %extended
 	my $seq = $extended_contigs{$contig_name}{'seq'};
 	print $contigs_out ">$contig_name\n$seq\n";
 }
-
+close($contigs_out);
 ####################################################################
 #### Filtering path branches and selecting path with best score ####
 ####################################################################
@@ -318,14 +325,15 @@ foreach my $root (keys %path_branches) {
 	push(@selected_supercontigs, $winner_contig);
 }
 
+close($info_out_selected);
+
 #Checking metrics after selection:
 my @selected_contigs_length = map {length($extended_contigs{$_}{'seq'})} @selected_supercontigs;
 %metrics = sequence_metrics(@selected_contigs_length);
 
 print "Metrics after merged contig selection:\n"; 
 print_metrics(%metrics);
-
-#Print selected contig information file to 	
+ 	
 #Print selected merged contig sequences to output file:
 open (my $selected_contigs_out, ">$output_file2") || die "Can't create $output_file2. $!\n";
 foreach my $selected_contig_name (sort {substr($a, 14) <=> substr($b, 14)} @selected_supercontigs) {
@@ -333,8 +341,38 @@ foreach my $selected_contig_name (sort {substr($a, 14) <=> substr($b, 14)} @sele
 	print $selected_contigs_out ">$selected_contig_name\n$seq\n"; 
 }
 
+close($selected_contigs_out);
+#######################################################################
+#### Printing final merged contigs + singleton clusters fasta file ####
+#######################################################################
+#Now that we have the selected merged contigs, we can output the final contigs (merged +
+#single-contig clusters) to a file:
 
+#First, get single contigs in graph:
+my @single_contigs = $dot_graph->isolated_vertices();
 
+#Getting metrics of final contig file:
+my @single_contigs_length = map {length($records{$single_contigs[$_]}{'seq'})} @single_contigs;
+my @all_merged_contigs_length = (@single_contigs_length, @selected_contigs_length);
+%metrics = sequence_metrics(@all_merged_contigs_length);
+
+print "Final sequence file metrics:\n"; 
+print_metrics(%metrics);
+
+#Printing final output:
+open(my $all_contigs_out, ">$output_file4") || die "Can't open $output_file4. $!\n"; 
+foreach my $contig_name (sort {$a <=> $b} @single_contigs) {
+	my $seq = $records{$single_contigs[$_]{'seq'}};
+	print $all_contigs_out ">$contig_name\n$seq\n";
+}
+
+#Appending all selected contigs to final output file:
+foreach my $selected_contig (sort {substr($a, 14) <=> substr($b, 14)} @selected_supercontigs) {
+	my $seq = $extended_contigs{$selected_contig}{'seq'};
+	print $all_contigs_out ">$selected_contig\n$seq\n"; 
+}
+
+close($all_contigs_out);
 
 
 
