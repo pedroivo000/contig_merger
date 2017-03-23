@@ -10,7 +10,7 @@ use warnings;
 use strict;
 use FastaTools;
 use List::Util qw(min max sum);
-use List::MoreUtils qw(first_index);
+use List::MoreUtils qw(first_index uniq);
 use Array::Utils qw(array_minus);
 use File::Basename;
 use Getopt::Std;
@@ -68,6 +68,11 @@ print "Opening graph file: $graph_dot_file\n";
 my $dot_reader = Graph::Reader::Dot->new();
 my $dot_graph = $dot_reader->read_graph($graph_dot_file);
 
+my $single_contigs_count = $dot_graph->isolated_vertices();
+my $all_vertices_count = $dot_graph->vertices;
+
+print "Total number of vertices in graph: $all_vertices_count\n";
+print "Number of isolated vertices in graph: $single_contigs_count\n"; 
 print "Done!\n\n";
 
 #The first thing we have to do is to reorient the edges in the graph in order to
@@ -144,7 +149,21 @@ print "Finding all overlap paths in graph:\n";
 die "Graph contains cycle!" if $dot_graph->has_a_cycle; #otherwise program will be stuck
 my $paths = build_paths($dot_graph);
 my $number_of_paths = @$paths;
-print "Found $number_of_paths paths in graph\nDone!\n\n"; 
+
+#Counting how many vertices are contained in paths:
+my %vertex_span;
+foreach my $path (@$paths) {
+	foreach my $vertex (@$path) {
+		$vertex_span{$vertex}++;
+	}
+}
+my $seen_vertex_count = keys %vertex_span;
+my $vertex_repetition_count = sum(values %vertex_span);
+
+print "Found $number_of_paths paths in graph\n"; 
+print "Unique vertices present in all paths: $seen_vertex_count\n";
+print "Total number of vertices in graph (including repeated): $vertex_repetition_count\n";  
+print "Done!\n\n";
 
 ##################################################
 #### Merging the overlapping contigs in graph ####
@@ -349,7 +368,9 @@ close($selected_contigs_out);
 #single-contig clusters) to a file:
 
 #First, get single contigs in graph:
-my @single_contigs = $dot_graph->isolated_vertices();
+my @all_contigs = $dot_graph->vertices;
+my @all_parent_contigs = keys %vertex_span;
+my @single_contigs = array_minus(@all_contigs, @all_parent_contigs);
 
 #Getting metrics of final contig file:
 my @single_contigs_length = map {length($records{$single_contigs[$_]}{'seq'})} @single_contigs;
