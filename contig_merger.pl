@@ -384,7 +384,7 @@ print_metrics(%metrics);
 #Printing final output:
 open(my $all_contigs_out, ">$output_file4") || die "Can't open $output_file4. $!\n"; 
 foreach my $contig_name (sort {$a <=> $b} @single_contigs) {
-	my $seq = $records{$single_contigs[$_]}{'seq'};
+	my $seq = $records{$contig_name}{'seq'};
 	print $all_contigs_out ">$contig_name\n$seq\n";
 }
 
