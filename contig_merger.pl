@@ -370,7 +370,7 @@ close($selected_contigs_out);
 
 #First, get single contigs in graph:
 my @all_contigs_in_graph = $dot_graph->vertices;
-my @all_contigs = map {$records{$_}} keys %records;
+my @all_contigs = keys %records;
 my @single_contigs = array_minus(@all_contigs, @all_contigs_in_graph);
 print "@single_contigs\n";
 
