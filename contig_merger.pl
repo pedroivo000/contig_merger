@@ -361,6 +361,7 @@ foreach my $selected_contig_name (sort {substr($a, 14) <=> substr($b, 14)} @sele
 }
 
 close($selected_contigs_out);
+
 #######################################################################
 #### Printing final merged contigs + singleton clusters fasta file ####
 #######################################################################
@@ -368,9 +369,10 @@ close($selected_contigs_out);
 #single-contig clusters) to a file:
 
 #First, get single contigs in graph:
-my @all_contigs = $dot_graph->vertices;
-my @all_parent_contigs = keys %vertex_span;
-my @single_contigs = array_minus(@all_contigs, @all_parent_contigs);
+my @all_contigs_in_graph = $dot_graph->vertices;
+my @all_contigs = map {$records{$_}} keys %records;
+my @single_contigs = array_minus(@all_contigs_in_graph, @all_contigs);
+print "$#single_contigs\n";
 
 #Getting metrics of final contig file:
 my @single_contigs_length = map {length($records{$single_contigs[$_]}{'seq'})} @single_contigs;
