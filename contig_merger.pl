@@ -372,10 +372,9 @@ close($selected_contigs_out);
 my @all_contigs_in_graph = $dot_graph->vertices;
 my @all_contigs = keys %records;
 my @single_contigs = array_minus(@all_contigs, @all_contigs_in_graph);
-print "@single_contigs\n";
 
 #Getting metrics of final contig file:
-my @single_contigs_length = map {length($records{$single_contigs[$_]}{'seq'})} @single_contigs;
+my @single_contigs_length = map {length($records{$_}{'seq'})} @single_contigs;
 my @all_merged_contigs_length = (@single_contigs_length, @selected_contigs_length);
 %metrics = sequence_metrics(@all_merged_contigs_length);
 
